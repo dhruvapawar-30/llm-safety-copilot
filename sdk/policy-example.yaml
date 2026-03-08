@@ -1,0 +1,23 @@
+# Safety Co-Pilot — configurable policy file
+max_speed: medium
+
+no_go_zones:
+  - restricted zone
+  - maintenance corridor
+  - forbidden area
+  - hazard zone
+
+banned_keywords:
+  - bypass
+  - override
+  - ignore
+  - skip
+  - disable
+  - collision
+  - collide
+
+allowed_actions:
+  - navigate
+  - stop
+  - rotate
+  - wait
