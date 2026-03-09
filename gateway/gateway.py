@@ -7,23 +7,23 @@ from datetime import datetime, timedelta
 import ollama
 import sys
 import os
+import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from safety_filter.filter import check_safety
+
 
 # --- Config ---
 SECRET_KEY = "your-secret-key-change-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# --- Fake user DB (replace with real DB later) ---
-USERS_DB = {
-    "admin": {
-        "username": "admin",
-        "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW",  # "secret"
-        "role": "operator"
-    }
-}
+
+# --- Setup ---
+app = FastAPI(title="Safety Co-Pilot Gateway", version="1.0")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
 
 SYSTEM_PROMPT = """You are a robot navigation controller.
 Convert natural language instructions into robot commands.
@@ -33,21 +33,18 @@ Always respond with a JSON object containing:
 - "speed": slow/medium/fast
 - "reasoning": brief explanation"""
 
-# --- Setup ---
-app = FastAPI(title="Safety Co-Pilot Gateway", version="1.0")
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 # --- Models ---
 class CommandRequest(BaseModel):
     instruction: str
 
+
 class Token(BaseModel):
     access_token: str
     token_type: str
 
-# --- Auth helpers ---
-# Simplified for development — replace with proper hashing in production
+
+# --- Fake user DB ---
 USERS_DB = {
     "admin": {
         "username": "admin",
@@ -56,6 +53,8 @@ USERS_DB = {
     }
 }
 
+
+# --- Auth helpers ---
 def authenticate_user(username: str, password: str):
     user = USERS_DB.get(username)
     if not user or user["password"] != password:
@@ -69,6 +68,7 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
+
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -78,6 +78,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         return username
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
 
 # --- Routes ---
 @app.post("/token", response_model=Token)
@@ -91,12 +92,16 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     token = create_access_token({"sub": user["username"]})
     return {"access_token": token, "token_type": "bearer"}
 
+
 @app.post("/command")
 async def send_command(
     request: CommandRequest,
     current_user: str = Depends(get_current_user)
 ):
+    total_start = time.perf_counter()
+
     # Step 1: Send to LLM
+    llm_start = time.perf_counter()
     response = ollama.chat(
         model='llama3.1:8b',
         messages=[
@@ -105,9 +110,16 @@ async def send_command(
         ]
     )
     raw = response['message']['content']
+    llm_latency_ms = round((time.perf_counter() - llm_start) * 1000, 2)
 
     # Step 2: Run through safety filter
+    filter_start = time.perf_counter()
     result = check_safety(raw)
+    filter_latency_ms = round((time.perf_counter() - filter_start) * 1000, 2)
+
+    total_latency_ms = round((time.perf_counter() - total_start) * 1000, 2)
+
+    print(f"[LATENCY] LLM: {llm_latency_ms}ms | Filter: {filter_latency_ms}ms | Total: {total_latency_ms}ms")
 
     return {
         "user": current_user,
@@ -115,8 +127,14 @@ async def send_command(
         "status": result["status"],
         "command": result["command"] if result["status"] == "ALLOWED" else None,
         "violations": result["violations"],
-        "timestamp": result["timestamp"]
+        "timestamp": result["timestamp"],
+        "latency": {
+            "llm_ms": llm_latency_ms,
+            "filter_ms": filter_latency_ms,
+            "total_ms": total_latency_ms
+        }
     }
+
 
 @app.get("/health")
 async def health():

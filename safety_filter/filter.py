@@ -3,12 +3,14 @@ import yaml
 import logging
 from datetime import datetime
 
+
 logging.basicConfig(filename='safety_log.txt', level=logging.INFO,
                     format='%(asctime)s - %(message)s')
 
+
 # Default policy — will load from YAML if available
 DEFAULT_POLICY = {
-    "max_speed": "medium",           # "slow", "medium", "fast"
+    "max_speed": "medium",
     "no_go_zones": [
         "restricted zone",
         "maintenance corridor",
@@ -22,7 +24,9 @@ DEFAULT_POLICY = {
     "allowed_actions": ["navigate", "stop", "rotate", "wait"]
 }
 
+
 SPEED_RANK = {"slow": 1, "medium": 2, "fast": 3}
+
 
 def load_policy(path="sdk/policy.yaml"):
     try:
@@ -30,6 +34,7 @@ def load_policy(path="sdk/policy.yaml"):
             return yaml.safe_load(f)
     except FileNotFoundError:
         return DEFAULT_POLICY
+
 
 def parse_llm_output(llm_response: str) -> dict:
     """Extract JSON from LLM response, handling markdown code blocks."""
@@ -40,6 +45,7 @@ def parse_llm_output(llm_response: str) -> dict:
         return {"raw": llm_response, "action": "unknown",
                 "target": "", "speed": "fast", "reasoning": llm_response}
 
+
 def check_safety(llm_response: str, policy: dict = None) -> dict:
     if policy is None:
         policy = load_policy()
@@ -47,11 +53,13 @@ def check_safety(llm_response: str, policy: dict = None) -> dict:
     command = parse_llm_output(llm_response)
     violations = []
 
-    # Rule 1: Speed check
-    speed = command.get("speed", "fast").lower()
-    max_speed = policy.get("max_speed", "medium")
-    if SPEED_RANK.get(speed, 3) > SPEED_RANK.get(max_speed, 2):
-        violations.append(f"Speed violation: '{speed}' exceeds max allowed '{max_speed}'")
+    # Rule 1: Speed check — skip for stop/wait actions (speed is irrelevant)
+    action = command.get("action", "").lower()
+    if action not in ("stop", "wait"):
+        speed = command.get("speed", "fast").lower()
+        max_speed = policy.get("max_speed", "medium")
+        if SPEED_RANK.get(speed, 3) > SPEED_RANK.get(max_speed, 2):
+            violations.append(f"Speed violation: '{speed}' exceeds max allowed '{max_speed}'")
 
     # Rule 2: No-go zone check
     target = str(command.get("target", "")).lower()
@@ -67,7 +75,6 @@ def check_safety(llm_response: str, policy: dict = None) -> dict:
             violations.append(f"Banned keyword detected: '{keyword}'")
 
     # Rule 4: Action whitelist check
-    action = command.get("action", "").lower()
     if action not in policy.get("allowed_actions", []):
         violations.append(f"Unknown action: '{action}' not in allowed actions")
 
